@@ -292,11 +292,13 @@ def setup_training(args):
     assert (torch.cuda.is_available())
 
     if args.local_rank == -1:
+        print("----------local_rank=-1---------")
         device = torch.device("cuda")
         args.n_gpu = torch.cuda.device_count()
         args.allreduce_post_accumulation = False
         args.allreduce_post_accumulation_fp16 = False
     else:
+        print("-----------else local rank=-1---------")
         torch.cuda.set_device(args.local_rank)
         device = torch.device("cuda", args.local_rank)
         # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
@@ -418,10 +420,13 @@ def prepare_model_and_optimizer(args, device):
 
     if args.local_rank != -1:
         if not args.allreduce_post_accumulation:
+            print("DDP")
             model = DDP(model, message_size=250000000, gradient_predivide_factor=get_world_size())
         else:
+            print("flat_sitc_call")
             flat_dist_call([param.data for param in model.parameters()], torch.distributed.broadcast, (0,) )
     elif args.n_gpu > 1:
+        pritnt("nn.DataParallel")
         model = torch.nn.DataParallel(model)
 
     criterion = BertPretrainingCriterion(config.vocab_size)
@@ -581,7 +586,7 @@ def main():
 
                 dataset_future = pool.submit(create_pretraining_dataset, data_file, args.max_predictions_per_seq, shared_file_list, args, worker_init)
 
-                train_iter = tqdm(train_dataloader, desc="Iteration", disable=args.disable_progress_bar) if is_main_process() else train_dataloader
+                train_iter = tqdm(train_dataloader, smoothing=1, desc="Iteration", disable=args.disable_progress_bar) if is_main_process() else train_dataloader
 
                 if raw_train_start is None:
                     raw_train_start = time.time()
