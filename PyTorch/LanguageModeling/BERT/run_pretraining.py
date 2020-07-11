@@ -53,6 +53,7 @@ from apex.amp import _amp_state
 
 import dllogger
 from concurrent.futures import ProcessPoolExecutor
+import time
 
 torch._C._jit_set_profiling_mode(False)
 torch._C._jit_set_profiling_executor(False)
@@ -349,7 +350,7 @@ def prepare_model_and_optimizer(args, device):
     if config.vocab_size % 8 != 0:
         config.vocab_size += 8 - (config.vocab_size % 8)
 
-    modeling.ACT2FN["bias_gelu"] = modeling.bias_gelu_training
+    modeling.ACT2FN["bias_gelu"] = torch.jit.script(modeling.bias_gelu_training)
     model = modeling.BertForPreTraining(config)
 
     checkpoint = None
@@ -587,11 +588,11 @@ def main():
                 dataset_future = pool.submit(create_pretraining_dataset, data_file, args.max_predictions_per_seq, shared_file_list, args, worker_init)
 
                 train_iter = tqdm(train_dataloader, smoothing=1, desc="Iteration", disable=args.disable_progress_bar) if is_main_process() else train_dataloader
-
+               
                 if raw_train_start is None:
                     raw_train_start = time.time()
                 for step, batch in enumerate(train_iter):
-
+                    start_time = time.time()
                     training_steps += 1
                     batch = [t.to(device) for t in batch]
                     input_ids, segment_ids, input_mask, masked_lm_labels, next_sentence_labels = batch
@@ -667,7 +668,7 @@ def main():
                             del train_dataloader
                             # thread.join()
                             return args, final_loss, train_time_raw, global_step
-
+                    print("iteration time:",time.time()-start_time)
                 del train_dataloader
                 # thread.join()
                 # Make sure pool has finished and switch train_dataloader
