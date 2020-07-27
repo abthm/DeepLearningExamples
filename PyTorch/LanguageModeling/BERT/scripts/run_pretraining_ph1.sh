@@ -16,22 +16,22 @@
 echo "Container nvidia build = " $NVIDIA_BUILD_ID
 rm -rf results
 export BERT_PREP_WORKING_DIR=/workspace/BERT/bert_pretraining/
-train_batch_size=${1:-8192}
-#train_batch_size=${1:-32}
+#train_batch_size=${1:-8192}
+train_batch_size=${1:-64}
 learning_rate=${2:-"6e-3"}
 precision=${3:-"fp16"}
 #num_gpus=${4:-8}
 num_gpus=${4:-1}
 warmup_proportion=${5:-"0.2843"}
-train_steps=${6:-7038}
-#train_steps=${6:-35}
+#train_steps=${6:-7038}
+train_steps=${6:-10}
 #save_checkpoint_steps=${7:-200}
 save_checkpoint_steps=${7:-35}
 resume_training=${8:-"false"}
 create_logfile=${9:-"true"}
 accumulate_gradients=${10:-"true"}
-gradient_accumulation_steps=${11:-128}
-#gradient_accumulation_steps=${11:-1}
+#gradient_accumulation_steps=${11:-128}
+gradient_accumulation_steps=${11:-1}
 seed=${12:-42}
 job_name=${13:-"bert_lamb_pretraining"}
 allreduce_post_accumulation=${14:-"true"}
@@ -136,7 +136,7 @@ CMD+=" $INIT_CHECKPOINT"
 CMD+=" --do_train"
 CMD+=" --json-summary ${RESULTS_DIR}/dllogger.json "
 
-CMD="python3 -m torch.distributed.launch --nproc_per_node=$num_gpus $CMD"
+CMD="python3.6 -m torch.distributed.launch --nproc_per_node=$num_gpus $CMD"
 
 
 if [ "$create_logfile" = "true" ] ; then

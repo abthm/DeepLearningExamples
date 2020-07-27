@@ -350,8 +350,8 @@ def prepare_model_and_optimizer(args, device):
     if config.vocab_size % 8 != 0:
         config.vocab_size += 8 - (config.vocab_size % 8)
 
-    #modeling.ACT2FN["bias_gelu"] = torch.jit.script(modeling.bias_gelu_training)
-    modeling.ACT2FN["bias_gelu"] = modeling.bias_gelu_training
+    modeling.ACT2FN["bias_gelu"] = torch.jit.script(modeling.bias_gelu_training)
+    #modeling.ACT2FN["bias_gelu"] = modeling.bias_gelu_training
     model = modeling.BertForPreTraining(config)
 
     checkpoint = None
@@ -511,6 +511,136 @@ def main():
 
     # Prepare optimizer
     model, optimizer, lr_scheduler, checkpoint, global_step, criterion = prepare_model_and_optimizer(args, device)
+    print("------model-------", model)
+    
+    #### enable plot histograms
+    plot_histograms = True and args.local_rank == 0 
+    plot_histogram_freq = 1000
+    #plot_layers = (torch.nn.Dropout, apex.normalization.fused_layer_norm.FusedLayerNormAffineFunction, torch.matmul, torch.nn.functional.softmax, torch.nn.functional.linear, torch.nn.functional.gelu, torch.tanh, torch.nn.CrossEntropyLoss, torch.nn.Linear, torch.nn.LayerNorm, torch.nn.Embedding)
+    plot_layers = (torch.nn.Linear, torch.nn.LayerNorm, torch.nn.Embedding, torch.nn.Dropout)
+    if plot_histograms:
+        global inputs
+        inputs = {}
+        global activations
+        activations = {}
+        global parameters
+        parameters = {}
+
+        def input_hook(module, input):
+            inputs['sample'] = tensor_to_numpy(input[0])
+            #print("-----------------self.inputs['sample']--------------", inputs['sample'], flush=True)
+
+        def module_forward_hook(module, input, output):
+            activations[module] = tensor_to_numpy(output)
+            params = {}
+            for n, p in module.named_parameters():
+                if p.requires_grad:
+                    params[n] = tensor_to_numpy(p)
+            parameters[module] = params
+
+        global first_layer
+        first_layer = True
+        def attach_module_forward_hook(net):
+            global first_layer
+            for n, l in net._modules.items():
+                if isinstance(l, plot_layers):
+                    print('TEST: first layer {}, attach hook to {}: {}'.format(first_layer, n, l))
+                    if first_layer:
+                        l.register_forward_pre_hook(input_hook)
+                        first_layer = False
+                    l.register_forward_hook(module_forward_hook)
+                else:
+                    #print('TEST: attach hook to {}: {}'.format(n, l))
+                    attach_module_forward_hook(l)
+
+        attach_module_forward_hook(model)
+
+    def tensor_to_numpy(tensor):
+        #print("------tensor-----", tensor)
+        if tensor.is_sparse:
+            tensor = tensor.to_dense()
+        return tensor.detach().cpu().numpy()
+
+    def plot_histogram_iter(iter):
+        # sync to ensure that the backward computation is done
+        torch.cuda.synchronize()
+
+        from matplotlib import pyplot as plt
+        from textwrap import wrap
+        import os
+
+        def plot_histogram(tensor, title, name):
+#            bins = 100
+#            tensor = tensor.flatten()
+#            fig = plt.figure()
+#            plot = fig.add_axes([0.15, 0.1, 0.7, 0.5])
+#            plot.hist(tensor, bins=bins, histtype='step')
+#            plot.set_title("\n".join(wrap("%s, shape %s" % (title, tensor.shape))), y=1.08)
+#            plot.set_ylabel('frequency')
+#            plot.set_xlabel('value')
+#            plt.xticks(rotation='vertical')
+
+            dir = 'histograms_iter_%d' % (iter)
+            if not os.path.exists(dir):
+                os.makedirs(dir)
+#            plt.savefig(os.path.join(dir, '%s.png' % name), bbox_inches='tight')
+            np.save(os.path.join(dir, '%s.npy' % name), tensor)
+#            plt.close(fig)
+
+        # plot inputs
+        global inputs
+        for i, k in enumerate(inputs.keys()):
+            print("---i,k-----",i,k)
+            print("----------------inputs[k].shape--------------{}".format(inputs[k].shape))
+            plot_histogram(inputs[k],
+                    'Input %s' % k,
+                    'input-%s' % i)
+
+        # plot activations
+        global activations
+        for i, k in enumerate(activations.keys()):
+            print("----i,k----",i,k)
+            print("---------------activations[k].shape--------------{}".format(activations[k].shape))
+            plot_histogram(activations[k],
+                    'Activation of %s' % k,
+                    'activation-%d' % i)
+
+        gradients = {}
+        def get_grads(net):
+            for _, l in net._modules.items():
+                if isinstance(l, plot_layers):
+                    grads = {}
+                    params = {}
+                    for n, p in l.named_parameters():
+                        if p.requires_grad:
+                            print("-------params---")
+                            params[n] = tensor_to_numpy(p)
+                            grads[n] = tensor_to_numpy(p.grad)
+                            print("------grads-----",grads)
+                    gradients[l] = grads
+                else:
+                    get_grads(l)
+
+        get_grads(model)
+
+        # plot parameters and gradients
+        global parameters
+        i = 0
+        for k in gradients.keys():
+            for pk in gradients[k].keys():
+                plot_histogram(parameters[k][pk],
+                        'Parameter %s of %s' % (pk, k),
+                        'parameter-%d' % i)
+                plot_histogram(gradients[k][pk],
+                        'Gradient %s of %s' % (pk, k),
+                        'gradient-%d' % i)
+                i += 1
+
+        # empty dict for next iter
+        inputs = {}
+        activations = {}
+        parameters = {}
+
 
     if is_main_process():
         dllogger.log(step="PARAMETER", data={"SEED": args.seed})
@@ -593,7 +723,7 @@ def main():
                 if raw_train_start is None:
                     raw_train_start = time.time()
                 for step, batch in enumerate(train_iter):
-                    #start_time = time.time()
+                    start_time = time.time()
                     training_steps += 1
                     batch = [t.to(device) for t in batch]
                     input_ids, segment_ids, input_mask, masked_lm_labels, next_sentence_labels = batch
@@ -614,6 +744,9 @@ def main():
                     else:
                         loss.backward()
                     average_loss += loss.item()
+
+                    if training_steps == 7:
+                        plot_histogram_iter(training_steps)
 
                     if training_steps % args.gradient_accumulation_steps == 0:
                         lr_scheduler.step()  # learning rate warmup
@@ -669,7 +802,9 @@ def main():
                             del train_dataloader
                             # thread.join()
                             return args, final_loss, train_time_raw, global_step
-                    #print("iteration time:",time.time()-start_time)
+                    print("iteration time:",time.time()-start_time)
+                    #if training_steps == 1:
+                    #    plot_histogram_iter(training_steps)
                 del train_dataloader
                 # thread.join()
                 # Make sure pool has finished and switch train_dataloader
